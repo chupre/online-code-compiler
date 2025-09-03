@@ -1,0 +1,20 @@
+spring:
+  application:
+    name: online-code-compiler
+  datasource:
+    url: jdbc:postgresql://localhost:5432/${DB_NAME}
+    username: ${DB_USER}
+    password: ${DB_PASSWORD}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+  flyway:
+    enabled: true
+
+cors:
+  frontend-url: ${FRONTEND_URL}
+
+server:
+  servlet:
+    context-path: /api

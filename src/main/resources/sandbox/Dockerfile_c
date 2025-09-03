@@ -1,0 +1,7 @@
+FROM gcc:15
+
+RUN useradd -ms /bin/bash runner
+USER runner
+WORKDIR /home/runner
+
+CMD ["/bin/bash"]
