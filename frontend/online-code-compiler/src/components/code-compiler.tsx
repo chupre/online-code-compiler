@@ -8,7 +8,7 @@ import "ace-builds/src-noconflict/mode-python";
 import "ace-builds/src-noconflict/mode-c_cpp";
 import "ace-builds/src-noconflict/theme-twilight";
 import "ace-builds/src-noconflict/ext-language_tools";
-import {executeC} from "@/http/codeAPI.ts";
+import {execute} from "@/http/codeAPI.ts";
 
 const defaultCode = {
     c: `#include <stdio.h>
@@ -42,19 +42,10 @@ export function CodeCompiler() {
         setIsRunning(true);
         setOutput("Running code...");
 
-        executeC(code).then((data) => {
+        execute(code, language.toUpperCase()).then((data) => {
             setOutput(data)
             setIsRunning(false)
         })
-
-        // setTimeout(() => {
-        //     if (language === "python") {
-        //         setOutput("Hello, World!\nHello, Developer!");
-        //     } else {
-        //         setOutput("Hello, World!");
-        //     }
-        //     setIsRunning(false);
-        // }, 1500);
     };
 
     const handleStop = () => {

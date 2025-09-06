@@ -1,5 +1,4 @@
-FROM eclipse-temurin:24-jdk-ubi9-minimal
-
+FROM eclipse-temurin:24-jdk-ubi9-minimal AS builder
 WORKDIR /app
 
 COPY mvnw .
@@ -9,9 +8,11 @@ COPY pom.xml .
 RUN ./mvnw dependency:go-offline -B
 
 COPY src src
+RUN ./mvnw clean package -DskipTests -B
 
-RUN ./mvnw package -DskipTests
+FROM sapmachine:24-jre-ubuntu-jammy AS runtime
+WORKDIR /app
 
-EXPOSE 8080
+COPY --from=builder /app/target/*.jar app.jar
 
-ENTRYPOINT ["java", "-jar", "target/online-code-compiler-0.0.1-SNAPSHOT.jar"]
+ENTRYPOINT ["java", "-jar", "app.jar"]

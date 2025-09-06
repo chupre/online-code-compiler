@@ -10,7 +10,7 @@ enum class Language(
         isCompiled = true,
         extension = "c",
         compileCmd = "gcc main.c -o main",
-        runCmd = "./Main"
+        runCmd = "./main"
     ),
     PYTHON(
         isCompiled = false,
