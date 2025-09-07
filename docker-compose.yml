@@ -1,4 +1,15 @@
 services:
+  frontend:
+    build:
+      context: ./frontend/online-code-compiler
+      args:
+        VITE_API_URL: ${VITE_API_URL}
+    container_name: occ-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - app
+
   app:
     build: .
     container_name: occ-backend
