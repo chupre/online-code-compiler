@@ -4,5 +4,6 @@ enum class Status {
     OK,
     COMPILER_ERROR,
     RUNTIME_ERROR,
-    INTERRUPTED
+    INTERRUPTED,
+    PENDING
 }

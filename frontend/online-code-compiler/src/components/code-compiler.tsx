@@ -1,4 +1,4 @@
-import { useState } from "react";
+import {useEffect, useRef, useState} from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -40,11 +40,17 @@ export function CodeCompiler() {
 
     const handleRun = async () => {
         setIsRunning(true);
-        setOutput("Running code...");
+        setOutput("");
 
-        execute(code, language.toUpperCase()).then((data) => {
-            setOutput(data)
-            setIsRunning(false)
+        const id = await execute(code, language.toUpperCase())
+        const eventSource = new EventSource(`${import.meta.env.VITE_API_URL}/api/execute/${id}`)
+        eventSource.onmessage = (event) => {
+            setOutput(prev => prev + event.data)
+        }
+
+        eventSource.addEventListener("complete", () => {
+            eventSource.close();
+            setIsRunning(false);
         })
     };
 
@@ -54,6 +60,13 @@ export function CodeCompiler() {
     };
 
     const editorMode = language === "python" ? "python" : "c_cpp";
+
+    const outputRef = useRef<HTMLDivElement | null>(null);
+    useEffect(() => {
+        if (outputRef.current) {
+            outputRef.current.scrollTop = outputRef.current.scrollHeight;
+        }
+    }, [output]);
 
     return (
         <div className="min-h-screen p-4 max-w-6xl mx-auto bg-[#161616] text-[#F8F8F8]">
@@ -157,10 +170,11 @@ export function CodeCompiler() {
                     <div className="p-2 border-b text-sm font-medium bg-[#141414] border-[#5F5A60] text-[#E2E2E2]">
                         OUTPUT
                     </div>
-                    <div className="p-4 pt-0">
-                        <div className="min-h-[150px] max-h-64 overflow-auto p-4 pt-0 bg-[#141414] text-muted-foreground whitespace-pre-wrap">
-                            {output || "Output will appear here..."}
-                        </div>
+                    <div
+                        ref={outputRef}
+                        className="h-64 mt-0 m-4 overflow-auto p-4 pt-0 bg-[#141414] text-muted-foreground whitespace-pre-wrap"
+                    >
+                        {output || "Output will appear here..."}
                     </div>
                 </Card>
             </div>

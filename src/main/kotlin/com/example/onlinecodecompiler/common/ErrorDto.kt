@@ -1,5 +1,5 @@
 package com.example.onlinecodecompiler.common
 
 data class ErrorDto(
-    val message: String,
+    val message: String?,
 )
