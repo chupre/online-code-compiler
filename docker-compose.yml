@@ -11,7 +11,11 @@ services:
       - app
 
   app:
-    build: .
+    build:
+      context: .
+      args:
+        # Use a specific local repo path and attach it to a volume
+        MAVEN_OPTS: "-Dmaven.repo.local=/maven-cache"
     container_name: occ-backend
     depends_on:
       - db
@@ -23,10 +27,13 @@ services:
       - SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD}
       - FRONTEND_URL=${FRONTEND_URL}
       - SPRING_JPA_HIBERNATE_DDL_AUTO=update
+      # Add Maven settings to environment as well
+      - MAVEN_OPTS=-Dmaven.repo.local=/maven-cache
     ports:
       - "8080:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - maven_cache:/maven-cache:rw  # Add read-write permissions explicitly
 
   db:
     image: postgres:16-alpine
@@ -57,3 +64,6 @@ services:
 
 volumes:
   postgres_data:
+  # Specify the volume driver and options for better caching
+  maven_cache:
+    driver: local
