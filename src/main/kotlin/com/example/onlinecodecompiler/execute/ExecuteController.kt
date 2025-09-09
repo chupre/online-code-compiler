@@ -28,6 +28,16 @@ class ExecuteController(private val executeService: ExecuteService) {
         return executeService.runExecution(id)
     }
 
+    @PostMapping("/{id}")
+    fun stopExecution(@PathVariable id: Long) {
+        return executeService.stopExecution(id);
+    }
+
+    @GetMapping("/{id}/details")
+    fun getExecutionDetails(@PathVariable id: Long): Execution {
+        return executeService.findExecution(id)
+    }
+
     @ExceptionHandler(ExecutionNotFoundException::class)
     fun handleExecutionNotFound(exception: ExecutionNotFoundException): ResponseEntity<ErrorDto> {
         return ResponseEntity(ErrorDto(exception.message), HttpStatus.NOT_FOUND)

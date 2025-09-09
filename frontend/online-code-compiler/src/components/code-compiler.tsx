@@ -8,7 +8,7 @@ import "ace-builds/src-noconflict/mode-python";
 import "ace-builds/src-noconflict/mode-c_cpp";
 import "ace-builds/src-noconflict/theme-twilight";
 import "ace-builds/src-noconflict/ext-language_tools";
-import {execute} from "@/http/codeAPI.ts";
+import {execute, stopExecution} from "@/http/codeAPI.ts";
 
 const defaultCode = {
     c: `#include <stdio.h>
@@ -31,6 +31,7 @@ export function CodeCompiler() {
     const [code, setCode] = useState(defaultCode.python);
     const [output, setOutput] = useState("");
     const [isRunning, setIsRunning] = useState(false);
+    const [currentExecutionId, setCurrentExecutionId] = useState<bigint>(0n)
 
     const handleLanguageChange = (value: "c" | "python") => {
         setLanguage(value);
@@ -43,7 +44,13 @@ export function CodeCompiler() {
         setOutput("");
 
         const id = await execute(code, language.toUpperCase())
+        setCurrentExecutionId(id)
         const eventSource = new EventSource(`${import.meta.env.VITE_API_URL}/api/execute/${id}`)
+
+        window.onbeforeunload = function () {
+            eventSource.close();
+        };
+
         eventSource.onmessage = (event) => {
             setOutput(prev => prev + event.data)
         }
@@ -54,9 +61,11 @@ export function CodeCompiler() {
         })
     };
 
-    const handleStop = () => {
-        setIsRunning(false);
-        setOutput("Execution stopped.");
+    const handleStop = async () => {
+        stopExecution(currentExecutionId).then(() => {
+            setIsRunning(false);
+            setOutput("Execution stopped.");
+        })
     };
 
     const editorMode = language === "python" ? "python" : "c_cpp";
@@ -174,7 +183,7 @@ export function CodeCompiler() {
                         ref={outputRef}
                         className="h-64 mt-0 m-4 overflow-auto p-4 pt-0 bg-[#141414] text-muted-foreground whitespace-pre-wrap"
                     >
-                        {output || "Output will appear here..."}
+                        {output}
                     </div>
                 </Card>
             </div>

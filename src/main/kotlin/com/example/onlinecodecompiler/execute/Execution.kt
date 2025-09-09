@@ -18,9 +18,6 @@ class Execution {
     @Enumerated(EnumType.STRING)
     var language: Language? = null
 
-    @Column(name = "output", length = Integer.MAX_VALUE)
-    var output: String? = null
-
     @Column(name = "status", length = 20)
     @Enumerated(EnumType.STRING)
     var status: Status? = null
@@ -30,4 +27,7 @@ class Execution {
 
     @Column(name = "created_at", updatable = false, insertable = false)
     var createdAt: Instant? = null
+
+    @Column(name = "executed_at")
+    var executedAt: Instant? = null
 }

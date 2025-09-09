@@ -1,37 +1,19 @@
 package com.example.onlinecodecompiler.execute
 
-import com.github.dockerjava.api.DockerClient
-import com.github.dockerjava.api.async.ResultCallback
-import com.github.dockerjava.api.model.Frame
-import com.github.dockerjava.core.DefaultDockerClientConfig
-import com.github.dockerjava.core.DockerClientConfig
-import com.github.dockerjava.core.DockerClientImpl
-import com.github.dockerjava.httpclient5.ApacheDockerHttpClient
-import com.github.dockerjava.transport.DockerHttpClient
-import org.apache.commons.compress.archivers.tar.TarArchiveEntry
-import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
+import com.example.onlinecodecompiler.docker.DockerService
+import com.example.onlinecodecompiler.docker.DockerStreamCallback
 import org.springframework.stereotype.Service
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter
-import java.io.ByteArrayInputStream
-import java.io.ByteArrayOutputStream
 import java.nio.file.Files
-import java.nio.file.Path
-import java.time.Duration
+import java.time.Instant
 import java.util.*
 
 @Service
-class ExecuteService(private val executionRepository: ExecutionRepository) {
-    var dockerConfig: DockerClientConfig = DefaultDockerClientConfig.createDefaultConfigBuilder().build()
-    var dockerHttpClient: DockerHttpClient = ApacheDockerHttpClient.Builder()
-        .dockerHost(dockerConfig.dockerHost)
-        .sslConfig(dockerConfig.sslConfig)
-        .maxConnections(100)
-        .connectionTimeout(Duration.ofSeconds(30))
-        .responseTimeout(Duration.ofSeconds(45))
-        .build()
-
-    var dockerClient: DockerClient = DockerClientImpl.getInstance(dockerConfig, dockerHttpClient)
-
+class ExecuteService(
+    private val executionRepository: ExecutionRepository,
+    private val registry: ExecutionRegistry,
+    private val dockerService: DockerService
+) {
     fun createExecution(codeDto: CodeDto): Long? {
         val execution = Execution()
         execution.code = codeDto.code
@@ -44,109 +26,175 @@ class ExecuteService(private val executionRepository: ExecutionRepository) {
     fun runExecution(id: Long): SseEmitter {
         val execution = executionRepository.findById(id).orElseThrow { ExecutionNotFoundException() }
 
+        // Record execution start time
+        val startTime = System.currentTimeMillis()
+        execution.executedAt = Instant.now()
+        executionRepository.save(execution)
+
         val emitter = SseEmitter(0)
+
+        // Configure SSE event handlers
+        setupSseEventHandlers(id, emitter)
+        registry.registerEmitter(id, emitter)
 
         Thread {
             try {
+                // Create temp directory and code file
                 val tempDir = Files.createTempDirectory("${execution.language?.extension}-exec-${UUID.randomUUID()}")
                 val codeFile = tempDir.resolve("main.${execution.language?.extension}")
                 Files.writeString(codeFile, execution.code ?: throw IllegalStateException("Code is null"))
 
-                val container = dockerClient.createContainerCmd("sandbox-${execution.language?.extension}")
-                    .withWorkingDir("/home/runner")
-                    .withCmd("sleep", "60")
-                    .exec()
+                // Create and start container
+                val containerImage = "sandbox-${execution.language?.extension}"
+                val containerId = dockerService.createContainer(containerImage)
+                registry.registerContainer(id, containerId)
 
-                dockerClient.startContainerCmd(container.id).exec()
-                copyFileToContainer(codeFile, container.id, "/home/runner")
+                // Copy code file to container (to /home/runner, then move to /workspace)
+                dockerService.copyFileToContainer(codeFile, containerId, "/home/runner")
 
-                val script = if (execution.language?.isCompiled ?: false) {
-                    """
-                ${execution.language?.compileCmd} 2> compile_error.txt
-                if [ $? -ne 0 ]; then
-                  cat compile_error.txt
-                  exit 1
-                fi
-                chmod +x main
-                ./main
-                """.trimIndent()
-                } else {
-                    execution.language?.runCmd
-                }
+                // Prepare execution script that moves file to workspace and executes
+                val script = createExecutionScript(execution.language)
 
-                val execCreateCmd = dockerClient.execCreateCmd(container.id)
-                    .withAttachStdout(true)
-                    .withAttachStderr(true)
-                    .withTty(true)
-                    .withCmd("sh", "-c", script)
-                    .exec()
+                // Create Docker callback handler
+                val callback = createDockerCallback(id, emitter, execution, startTime)
+                registry.registerCallback(id, callback)
 
-                val buffer = StringBuilder()
-
-                dockerClient.execStartCmd(execCreateCmd.id).exec(object : ResultCallback.Adapter<Frame>() {
-                    override fun onNext(frame: Frame) {
-                        val chunk = String(frame.payload)
-                        buffer.append(chunk)
-                        var index: Int
-                        while (true) {
-                            index = buffer.indexOf("\n")
-                            if (index == -1) break
-                            val line = buffer.substring(0, index + 1)
-                            buffer.delete(0, index + 1)
-                            try {
-                                emitter.send(line)
-                            } catch (_: Exception) {
-                                cleanup(container.id)
-                                return
-                            }
-                        }
-                    }
-
-                    override fun onComplete() {
-                        if (buffer.isNotEmpty()) {
-                            try {
-                                emitter.send(buffer.toString())
-                            } catch (_: Exception) {}
-                        }
-                        cleanup(container.id)
-                        emitter.send(SseEmitter.event().name("complete").data("done"))
-                        emitter.complete()
-                    }
-
-                    override fun onError(throwable: Throwable) {
-                        cleanup(container.id)
-                        emitter.send(SseEmitter.event().name("complete").data("done"))
-                        emitter.completeWithError(throwable)
-                    }
-                })
+                // Execute command in container
+                dockerService.executeCommand(containerId, script, callback)
 
             } catch (ex: Exception) {
                 emitter.completeWithError(ex)
+                registry.cleanupExecution(id)
             }
         }.start()
 
         return emitter
     }
 
-    private fun copyFileToContainer(file: Path, containerId: String, destPath: String) {
-        val tarBytes = ByteArrayOutputStream()
-        TarArchiveOutputStream(tarBytes).use { tarOut ->
-            val entry = TarArchiveEntry(file.toFile(), file.fileName.toString())
-            entry.size = Files.size(file)
-            tarOut.putArchiveEntry(entry)
-            Files.newInputStream(file).use { input -> input.copyTo(tarOut) }
-            tarOut.closeArchiveEntry()
+    private fun setupSseEventHandlers(id: Long, emitter: SseEmitter) {
+        // Handler for client disconnection
+        emitter.onCompletion {
+            handleClientDisconnection(id)
         }
 
-        dockerClient.copyArchiveToContainerCmd(containerId)
-            .withTarInputStream(ByteArrayInputStream(tarBytes.toByteArray()))
-            .withRemotePath(destPath)
-            .exec()
+        // Handler for emitter errors
+        emitter.onError { _ ->
+            handleClientDisconnection(id)
+        }
     }
 
-    private fun cleanup(containerId: String) {
-        try {
-            dockerClient.removeContainerCmd(containerId).withForce(true).exec()
-        } catch (_: Exception) {}
+    private fun handleClientDisconnection(id: Long) {
+        val containerId = registry.getContainer(id)
+        if (containerId != null) {
+            // Stop container
+            dockerService.cleanup(containerId)
+
+            // Update execution status
+            val currentExecution = executionRepository.findById(id).orElse(null)
+            if (currentExecution != null && currentExecution.status != Status.OK) {
+                currentExecution.status = Status.INTERRUPTED
+                executionRepository.save(currentExecution)
+            }
+
+            // Clean up resources
+            registry.cleanupExecution(id)
+        }
+    }
+
+    private fun createExecutionScript(language: Language?): String {
+        val fileName = "main.${language?.extension}"
+        return if (language?.isCompiled == true) {
+            """
+            # Find and copy the file to workspace
+            SOURCE_FILE=${'$'}(find /home/runner -name "$fileName" -type f | head -1)
+            if [ -z "${'$'}SOURCE_FILE" ]; then
+                echo "Error: $fileName not found in /home/runner"
+                exit 1
+            fi
+            
+            cp "${'$'}SOURCE_FILE" /workspace/$fileName
+            cd /workspace
+            ${language.compileCmd} 2> compile_error.txt
+            if [ $? -ne 0 ]; then
+              cat compile_error.txt
+              exit 1
+            fi
+            chmod +x main
+            ./main
+            """.trimIndent()
+        } else {
+            """
+            # Find and copy the file to workspace
+            SOURCE_FILE=${'$'}(find /home/runner -name "$fileName" -type f | head -1)
+            if [ -z "${'$'}SOURCE_FILE" ]; then
+                echo "Error: $fileName not found in /home/runner"
+                exit 1
+            fi
+            
+            cp "${'$'}SOURCE_FILE" /workspace/$fileName
+            cd /workspace
+            ${language?.runCmd ?: ""}
+            """.trimIndent()
+        }
+    }
+
+    private fun createDockerCallback(
+        id: Long,
+        emitter: SseEmitter,
+        execution: Execution,
+        startTime: Long
+    ): DockerStreamCallback {
+        return DockerStreamCallback(
+            emitter = emitter,
+            onComplete = {
+                // Calculate and save execution time
+                val executionTime = System.currentTimeMillis() - startTime
+                execution.executionTimeMs = executionTime.toInt()
+                execution.status = Status.OK
+                executionRepository.save(execution)
+
+                // Clean up resources
+                val containerId = registry.getContainer(id)
+                if (containerId != null) {
+                    dockerService.cleanup(containerId)
+                }
+                registry.cleanupExecution(id)
+            },
+            onError = { _ ->
+                // Calculate and save execution time for errors too
+                val executionTime = System.currentTimeMillis() - startTime
+                execution.executionTimeMs = executionTime.toInt()
+                execution.status = Status.INTERRUPTED
+                executionRepository.save(execution)
+
+                // Clean up resources
+                val containerId = registry.getContainer(id)
+                if (containerId != null) {
+                    dockerService.cleanup(containerId)
+                }
+                registry.cleanupExecution(id)
+            },
+            onInterrupt = {
+                // Handle execution interruption
+                val containerId = registry.getContainer(id)
+                if (containerId != null) {
+                    dockerService.cleanup(containerId)
+                }
+                execution.status = Status.INTERRUPTED
+                executionRepository.save(execution)
+                registry.cleanupExecution(id)
+            }
+        )
+    }
+
+    fun stopExecution(id: Long) {
+        val containerId = registry.getContainer(id) ?: return
+        dockerService.cleanup(containerId)
+        registry.getEmitter(id)?.complete()
+        registry.cleanupExecution(id)
+    }
+
+    fun findExecution(id: Long): Execution {
+        return executionRepository.findById(id).orElseThrow { ExecutionNotFoundException() }
     }
 }
